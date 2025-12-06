@@ -314,4 +314,3 @@ def create_trader_agent(
         default_config.update(config)
     
     return ChattenTraderAgent(**default_config)
-
