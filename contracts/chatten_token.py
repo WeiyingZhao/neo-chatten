@@ -35,6 +35,7 @@ PREFIX_ORACLE = b'\x12'
 PREFIX_MINTER = b'\x13'
 PREFIX_PRICE = b'\x20'
 PREFIX_GAS_RESERVE = b'\x21'
+PREFIX_OWNERSHIP_CLAIMED = b'\x22'  # Track if ownership was claimed
 
 
 # =============================================================================
@@ -61,6 +62,13 @@ on_transfer = Nep11TransferEvent
 
 @public
 def _deploy(data: Any, update: bool) -> None:
+    """
+    Contract deployment handler.
+    
+    NOTE: During deployment, calling_script_hash is the ContractManagement system,
+    NOT your wallet. We use tx.sender to get the actual deployer's address.
+    After deployment, call claim_ownership() to activate your permissions.
+    """
     if not update:
         tx = cast(Transaction, script_container)
         deployer = tx.sender
@@ -68,8 +76,57 @@ def _deploy(data: Any, update: bool) -> None:
         put_int(PREFIX_PAUSED, 0)
         put_int(PREFIX_TOTAL_SUPPLY, 0)
         put_int(PREFIX_GAS_RESERVE, 0)
-        put_int(PREFIX_ORACLE + deployer, 1)
-        put_int(PREFIX_MINTER + deployer, 1)
+        put_int(PREFIX_OWNERSHIP_CLAIMED, 0)  # Not yet claimed
+        # Don't set oracle/minter here - will be set in claim_ownership
+
+
+@public
+def claim_ownership() -> bool:
+    """
+    Claim ownership after deployment.
+    
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║  WHY THIS IS NEEDED:                                                 ║
+    ╠══════════════════════════════════════════════════════════════════════╣
+    ║  During _deploy(), the 'calling_script_hash' is the Neo Contract     ║
+    ║  Management System, NOT your wallet address.                         ║
+    ║                                                                      ║
+    ║  However, tx.sender IS your wallet, so we stored that as admin.      ║
+    ║  This function lets you properly claim oracle/minter permissions     ║
+    ║  by proving you control the admin address via check_witness().       ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+    
+    Call this ONCE after deployment to activate your permissions.
+    
+    Returns:
+        bool: True if ownership claimed successfully
+    """
+    # Get the stored admin (set during _deploy from tx.sender)
+    admin_data = get(PREFIX_ADMIN)
+    assert len(admin_data) == 20, "No admin set"
+    admin = UInt160(admin_data)
+    
+    # Verify the caller controls this address
+    assert check_witness(admin), "Not admin - you must sign with the deployer wallet"
+    
+    # Check if already claimed
+    claimed = get_int(PREFIX_OWNERSHIP_CLAIMED)
+    assert claimed == 0, "Ownership already claimed"
+    
+    # Grant oracle and minter permissions to admin
+    put_int(PREFIX_ORACLE + admin, 1)
+    put_int(PREFIX_MINTER + admin, 1)
+    
+    # Mark as claimed
+    put_int(PREFIX_OWNERSHIP_CLAIMED, 1)
+    
+    return True
+
+
+@public(safe=True)
+def is_ownership_claimed() -> bool:
+    """Check if ownership has been claimed after deployment."""
+    return get_int(PREFIX_OWNERSHIP_CLAIMED) == 1
 
 
 # =============================================================================
@@ -130,7 +187,12 @@ def update_price_oracle(model_id: bytes, price_gas: int) -> bool:
     assert _not_paused(), "Paused"
     assert len(model_id) > 0, "Invalid"
     assert price_gas > 0, "Invalid"
-    assert _is_oracle(calling_script_hash), "Not oracle"
+    
+    # Get sender address from transaction (like _deploy does)
+    tx = cast(Transaction, script_container)
+    sender = tx.sender
+    assert check_witness(sender), "Not authorized"
+    assert _is_oracle(sender), "Not oracle"
     
     token_id = CryptoLib.sha256(model_id)
     put_int(PREFIX_PRICE + token_id, price_gas)
@@ -188,7 +250,12 @@ def mint(to: UInt160, model_id: bytes, amount: int, quality: int) -> bool:
     assert len(model_id) > 0, "Invalid"
     assert amount > 0, "Invalid"
     assert quality >= 50 and quality <= 100, "Invalid quality"
-    assert _is_minter(calling_script_hash), "Not minter"
+    
+    # Get sender address from transaction (like _deploy does)
+    tx = cast(Transaction, script_container)
+    sender = tx.sender
+    assert check_witness(sender), "Not authorized"
+    assert _is_minter(sender), "Not minter"
     
     token_id = CryptoLib.sha256(model_id)
     actual = amount * quality // 100

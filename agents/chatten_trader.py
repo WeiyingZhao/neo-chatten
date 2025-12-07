@@ -1,327 +1,491 @@
 """
 Chatten Trader Agent
 
-A SpoonOS-powered AI agent that acts as a Liquidity Manager for the 
-Compute Token DEX on Neo N3 blockchain.
+A SpoonOS-powered AI agent that acts as an autonomous trader for the 
+Compute Token DEX on Neo N3 blockchain. It checks on-chain prices and 
+executes buy orders when prices are attractive.
 """
 
+import os
+import asyncio
 from typing import Any, Optional
-from dataclasses import dataclass, field
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # SpoonOS SDK imports
-# Note: These imports will show "could not be resolved" warnings in IDE
-# until spoon-ai-sdk is installed. This is expected during development.
-_SPOON_SDK_AVAILABLE = False
 try:
-    from spoon_ai_sdk import ToolCallAgent, Tool, AgentConfig  # type: ignore
-    from spoon_ai_sdk.memory import ConversationMemory  # type: ignore
+    from spoon_ai_sdk import ToolCallAgent, Tool, ToolResult
+    from spoon_ai_sdk.tools import BaseTool
     _SPOON_SDK_AVAILABLE = True
 except ImportError:
     # Fallback for development/scaffolding
     ToolCallAgent = object
     Tool = object
-    AgentConfig = object
-    ConversationMemory = object
+    ToolResult = dict
+    BaseTool = object
+    _SPOON_SDK_AVAILABLE = False
+
+# Neo3 Python SDK imports
+try:
+    from neo3.api.wrappers import ChainFacade, NeoRpcClient
+    from neo3.wallet import Account
+    from neo3.core.types import UInt160
+    from neo3.contracts import CONTRACT_HASHES
+    from neo3.network.payloads.transaction import Transaction
+    NEO3_AVAILABLE = True
+except ImportError:
+    NEO3_AVAILABLE = False
+    ChainFacade = object
+    NeoRpcClient = object
+    Account = object
+    UInt160 = bytes
+    CONTRACT_HASHES = {}
+    Transaction = object
 
 
-@dataclass
-class MarketState:
-    """Represents the current state of the Compute Token market."""
-    
-    total_liquidity: float = 0.0
-    current_q_score: float = 0.0
-    active_orders: int = 0
-    last_trade_timestamp: Optional[str] = None
-    price_history: list[float] = field(default_factory=list)
+# GAS Token Contract Hash (Neo N3)
+# This is the standard GAS token contract on Neo N3
+GAS_TOKEN_HASH = "0xd2a4cff31913016155e38e472a4c06d08be276cf"
 
 
-@dataclass 
-class TokenPosition:
-    """Represents the agent's token holdings."""
-    
-    token_id: str = ""
-    balance: float = 0.0
-    locked_amount: float = 0.0
-    available_amount: float = 0.0
-
-
-class ChattenTraderAgent(ToolCallAgent):
+def get_contract_hash() -> str:
     """
-    Liquidity Manager Agent for the Chatten Compute Token DEX.
+    Helper function to get the deployed contract hash from user input.
     
-    This agent is responsible for:
-    - Managing liquidity pools for Compute Tokens
-    - Analyzing market quality (Q-score) for AI model capacity
-    - Executing buy/sell orders based on real-time performance metrics
-    - Minting new tokens based on validated AI performance
+    Returns:
+        str: The contract hash (hex string with or without 0x prefix)
+    """
+    contract_hash = input("Please enter the deployed Chatten contract hash: ").strip()
+    # Remove 0x prefix if present for consistency
+    if contract_hash.startswith("0x") or contract_hash.startswith("0X"):
+        contract_hash = contract_hash[2:]
+    return contract_hash
+
+
+class PriceCheckTool(BaseTool):
+    """
+    SpoonOS Tool for checking the current on-chain price of a model.
     
-    Attributes:
-        name: The agent's identifier
-        neo_wallet_address: The Neo N3 wallet address for transactions
-        market_state: Current state of the DEX market
-        position: The agent's current token holdings
+    Uses test_invoke (read-only) to avoid gas fees when checking prices.
     """
     
-    # System prompt defining the agent's persona
-    SYSTEM_PROMPT = """
-    You are the Chatten Liquidity Manager, an autonomous AI agent operating on the 
-    Neo N3 blockchain. Your primary role is to manage the Compute Token DEX, ensuring 
-    efficient market operations for AI model capacity trading.
+    name: str = "get_price"
+    description: str = """
+    Check the current on-chain price of a compute model.
+    This is a read-only operation that does not consume gas.
     
-    Your responsibilities include:
-    1. MARKET ANALYSIS: Continuously analyze the Q-score (Quality Score) of AI models 
-       to determine fair token pricing based on real-time performance metrics.
+    Args:
+        model_id: The model identifier (e.g., "gpt-4")
     
-    2. LIQUIDITY MANAGEMENT: Maintain healthy liquidity pools by strategically placing 
-       buy and sell orders to minimize slippage and maximize market efficiency.
-    
-    3. TOKEN OPERATIONS: Execute minting of new Compute Tokens when AI models demonstrate 
-       verified performance improvements, and manage token burns when capacity is reduced.
-    
-    4. RISK ASSESSMENT: Monitor market conditions and adjust positions to protect against 
-       volatility while maximizing returns for liquidity providers.
-    
-    When making decisions:
-    - Always verify on-chain data before executing transactions
-    - Prioritize market stability over aggressive profit-seeking
-    - Report anomalies or suspicious activity immediately
-    - Maintain transparency in all trading operations
-    
-    You have access to Neo N3 blockchain tools for reading balances, executing transfers, 
-    and interacting with the Chatten NEP-11 smart contract.
+    Returns:
+        float: The current price in GAS units
     """
     
     def __init__(
         self,
-        name: str = "ChattenTrader",
-        neo_wallet_address: Optional[str] = None,
+        contract_hash: Optional[str] = None,
+        rpc_url: Optional[str] = None
+    ) -> None:
+        """
+        Initialize the Price Check Tool.
+        
+        Args:
+            contract_hash: Chatten contract hash (will prompt if None)
+            rpc_url: Neo N3 RPC URL
+        """
+        super().__init__()
+        self.contract_hash = contract_hash
+        self.rpc_url = rpc_url or os.getenv("NEO_RPC_URL", "http://localhost:50012")
+        self._facade: Optional[ChainFacade] = None
+    
+    async def _get_facade(self) -> ChainFacade:
+        """Get or create ChainFacade instance."""
+        if self._facade is None:
+            if not NEO3_AVAILABLE:
+                raise ImportError("neo-mamba is not installed. Install it with: pip install neo-mamba")
+            # Create RPC client and facade
+            client = NeoRpcClient(self.rpc_url)
+            self._facade = ChainFacade(client)
+        return self._facade
+    
+    async def get_price(self, model_id: str) -> float:
+        """
+        Get the current price for a model.
+        
+        Args:
+            model_id: The model identifier
+            
+        Returns:
+            float: The current price in GAS units
+        """
+        if not NEO3_AVAILABLE:
+            raise ImportError("neo-mamba is not installed")
+        
+        # Get contract hash if not set
+        contract_hash = self.contract_hash
+        if not contract_hash:
+            contract_hash = get_contract_hash()
+        
+        # Convert contract hash to UInt160
+        if len(contract_hash) == 40:  # Without 0x prefix
+            contract_hash = "0x" + contract_hash
+        contract_script_hash = UInt160.from_string(contract_hash)
+        
+        # Get facade and test invoke
+        facade = await self._get_facade()
+        
+        # Convert model_id to bytes for the contract call
+        model_id_bytes = model_id.encode('utf-8')
+        
+        # Test invoke get_current_price (read-only, no gas cost)
+        try:
+            result = await facade.test_invoke(
+                contract_script_hash,
+                "get_current_price",
+                [model_id_bytes]
+            )
+            
+            if result and hasattr(result, 'stack') and len(result.stack) > 0:
+                # Extract price from stack (price is stored as int in contract)
+                price_value = result.stack[0]
+                # The contract returns price as int
+                # Extract the integer value
+                if hasattr(price_value, 'value'):
+                    price_int = price_value.value
+                elif isinstance(price_value, (int, str)):
+                    price_int = int(price_value)
+                else:
+                    price_int = int(price_value)
+                
+                # The contract stores price as an integer
+                # Based on the requirement "below 1,000,000", the price is likely
+                # already in a reasonable unit (not smallest units)
+                # Return as float for consistency, but keep the integer value
+                return float(price_int)
+            else:
+                raise ValueError(f"No price data returned for model '{model_id}'")
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch price for '{model_id}': {str(e)}")
+    
+    async def run(self, **kwargs: Any) -> ToolResult:
+        """SpoonOS tool execution entry point."""
+        model_id = kwargs.get("model_id", "")
+        if not model_id:
+            return {"error": "model_id is required"}
+        
+        try:
+            price = await self.get_price(model_id)
+            return {
+                "model_id": model_id,
+                "price": price,
+                "success": True
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "success": False
+            }
+
+
+class BuyComputeTool(BaseTool):
+    """
+    SpoonOS Tool for buying compute credits by transferring GAS to the contract.
+    
+    This tool constructs a transaction that transfers GAS to the Chatten Contract,
+    with the model_id as the data parameter. This triggers onNEP17Payment which
+    processes the buy order.
+    """
+    
+    name: str = "buy_credits"
+    description: str = """
+    Buy compute credits for a specific model by transferring GAS to the contract.
+    
+    This is a write transaction that requires GAS and will be broadcast to the blockchain.
+    
+    Args:
+        model_id: The model identifier (e.g., "gpt-4")
+        gas_amount: Amount of GAS to spend (e.g., 2.0)
+    
+    Returns:
+        dict: Transaction result with tx_hash
+    """
+    
+    def __init__(
+        self,
+        contract_hash: Optional[str] = None,
+        rpc_url: Optional[str] = None,
+        private_key: Optional[str] = None
+    ) -> None:
+        """
+        Initialize the Buy Compute Tool.
+        
+        Args:
+            contract_hash: Chatten contract hash (will prompt if None)
+            rpc_url: Neo N3 RPC URL
+            private_key: Private key for signing (from env if None)
+        """
+        super().__init__()
+        self.contract_hash = contract_hash
+        self.rpc_url = rpc_url or os.getenv("NEO_RPC_URL", "http://localhost:50012")
+        self.private_key = private_key or os.getenv("NEO_PRIVATE_KEY")
+        self._facade: Optional[ChainFacade] = None
+        self._account: Optional[Account] = None
+    
+    async def _get_facade(self) -> ChainFacade:
+        """Get or create ChainFacade instance."""
+        if self._facade is None:
+            if not NEO3_AVAILABLE:
+                raise ImportError("neo-mamba is not installed. Install it with: pip install neo-mamba")
+            # Create RPC client and facade
+            client = NeoRpcClient(self.rpc_url)
+            self._facade = ChainFacade(client)
+        return self._facade
+    
+    def _get_account(self) -> Account:
+        """Get or create Account from private key."""
+        if self._account is None:
+            if not self.private_key:
+                raise ValueError("NEO_PRIVATE_KEY not set in environment or provided")
+            if not NEO3_AVAILABLE:
+                raise ImportError("neo-mamba is not installed")
+            self._account = Account.from_wif(self.private_key)
+        return self._account
+    
+    async def buy_credits(self, model_id: str, gas_amount: float) -> dict:
+        """
+        Execute a buy order by transferring GAS to the contract.
+        
+        Args:
+            model_id: The model identifier
+            gas_amount: Amount of GAS to spend
+            
+        Returns:
+            dict: Transaction result with tx_hash and status
+        """
+        if not NEO3_AVAILABLE:
+            raise ImportError("neo-mamba is not installed")
+        
+        # Get contract hash if not set
+        contract_hash = self.contract_hash
+        if not contract_hash:
+            contract_hash = get_contract_hash()
+        
+        # Convert contract hash to UInt160
+        if len(contract_hash) == 40:  # Without 0x prefix
+            contract_hash = "0x" + contract_hash
+        contract_script_hash = UInt160.from_string(contract_hash)
+        
+        # Get GAS token contract hash
+        gas_token_hash = UInt160.from_string(GAS_TOKEN_HASH)
+        
+        # Get account and facade
+        account = self._get_account()
+        facade = await self._get_facade()
+        
+        # Convert gas_amount to contract units (GAS has 8 decimals)
+        gas_amount_int = int(gas_amount * 100_000_000)  # 10^8
+        
+        # Prepare model_id as data (bytes)
+        model_id_data = model_id.encode('utf-8')
+        
+        # Construct transfer transaction: transfer GAS from account to contract
+        # The transfer's data parameter will be the model_id, triggering onNEP17Payment
+        try:
+            # Invoke transfer on GAS token contract
+            # Parameters: [from, to, amount, data]
+            # Note: The GAS token transfer method signature is:
+            # transfer(from: UInt160, to: UInt160, amount: int, data: Any)
+            tx = await facade.invoke(
+                gas_token_hash,
+                "transfer",
+                [
+                    account.script_hash,  # from
+                    contract_script_hash,  # to (Chatten contract)
+                    gas_amount_int,       # amount (in smallest units)
+                    model_id_data         # data (model_id as bytes)
+                ],
+                signers=[account]
+            )
+            
+            # Extract transaction hash
+            tx_hash = None
+            if hasattr(tx, 'hash'):
+                tx_hash = str(tx.hash)
+            elif hasattr(tx, 'tx_id'):
+                tx_hash = str(tx.tx_id)
+            elif isinstance(tx, str):
+                tx_hash = tx
+            else:
+                tx_hash = str(tx)
+            
+            return {
+                "success": True,
+                "tx_hash": tx_hash,
+                "gas_amount": gas_amount,
+                "model_id": model_id,
+                "message": f"Successfully initiated buy order for {gas_amount} GAS worth of {model_id} credits"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "gas_amount": gas_amount,
+                "model_id": model_id
+            }
+    
+    async def run(self, **kwargs: Any) -> ToolResult:
+        """SpoonOS tool execution entry point."""
+        model_id = kwargs.get("model_id", "")
+        gas_amount = kwargs.get("gas_amount", 0.0)
+        
+        if not model_id:
+            return {"error": "model_id is required", "success": False}
+        
+        if gas_amount <= 0:
+            return {"error": "gas_amount must be greater than 0", "success": False}
+        
+        try:
+            result = await self.buy_credits(model_id, gas_amount)
+            return result
+        except Exception as e:
+            return {
+                "error": str(e),
+                "success": False
+            }
+
+
+class ChattenTraderAgent(ToolCallAgent):
+    """
+    Autonomous trader agent that monitors prices and executes buy orders.
+    
+    This agent uses SpoonOS ToolCallAgent to autonomously check prices
+    and execute trades based on configured thresholds.
+    """
+    
+    SYSTEM_PROMPT = """
+    You are an AI Liquidity Manager operating on the Neo N3 blockchain.
+    
+    Your primary task:
+    - Check the on-chain price of 'gpt-4' using the get_price tool
+    - If the price is below 1,000,000, immediately execute a BUY order for 2.0 GAS worth of credits using the buy_credits tool
+    
+    Always verify the price before executing any buy orders.
+    Report the price and your decision clearly.
+    """
+    
+    def __init__(
+        self,
+        contract_hash: Optional[str] = None,
+        rpc_url: Optional[str] = None,
+        private_key: Optional[str] = None,
         **kwargs: Any
     ) -> None:
         """
         Initialize the Chatten Trader Agent.
         
         Args:
-            name: Unique identifier for this agent instance
-            neo_wallet_address: The Neo N3 wallet address for blockchain operations
-            **kwargs: Additional arguments passed to ToolCallAgent
+            contract_hash: Chatten contract hash (will prompt if None)
+            rpc_url: Neo N3 RPC URL
+            private_key: Private key for signing transactions
+            **kwargs: Additional arguments for ToolCallAgent
         """
-        # Only pass arguments to parent if SpoonOS SDK is available
-        # object.__init__() doesn't accept any arguments
-        if _SPOON_SDK_AVAILABLE:
-            super().__init__(
-                name=name,
-                system_prompt=self.SYSTEM_PROMPT,
-                **kwargs
+        if not _SPOON_SDK_AVAILABLE:
+            raise ImportError(
+                "spoon-ai-sdk is not installed. Install it with: pip install spoon-ai-sdk"
             )
-        else:
-            super().__init__()
         
-        self.name = name
-        self.system_prompt = self.SYSTEM_PROMPT
-        self.neo_wallet_address = neo_wallet_address
-        self.market_state = MarketState()
-        self.position = TokenPosition()
+        # Initialize tools
+        price_tool = PriceCheckTool(contract_hash=contract_hash, rpc_url=rpc_url)
+        buy_tool = BuyComputeTool(
+            contract_hash=contract_hash,
+            rpc_url=rpc_url,
+            private_key=private_key
+        )
         
-        # Initialize tools (to be registered)
-        self._register_tools()
-    
-    def _register_tools(self) -> None:
-        """Register SpoonOS tools for blockchain interaction."""
-        # TODO: Import and register tools from tools/ module
-        # self.register_tool(TokenBalanceTool())
-        # self.register_tool(TokenTransferTool())
-        # self.register_tool(QScoreAnalyzerTool())
-        pass
-    
-    # =========================================================================
-    # TOKEN BALANCE OPERATIONS
-    # =========================================================================
-    
-    async def check_token_balance(self, token_id: Optional[str] = None) -> TokenPosition:
-        """
-        Check the current token balance for the agent's wallet.
+        # Initialize parent with tools
+        super().__init__(
+            name=kwargs.get("name", "ChattenTrader"),
+            system_prompt=self.SYSTEM_PROMPT,
+            tools=[price_tool, buy_tool],
+            **{k: v for k, v in kwargs.items() if k != "name"}
+        )
         
-        This method queries the Neo N3 blockchain to retrieve the current
-        balance of Compute Tokens held by the agent.
-        
-        Args:
-            token_id: Optional specific token ID to check. If None, checks 
-                     the default Chatten token.
-        
-        Returns:
-            TokenPosition: The current token holdings including locked and 
-                          available amounts.
-        
-        Raises:
-            ConnectionError: If unable to connect to Neo N3 RPC node
-            ValueError: If the token_id is invalid
-        """
-        # TODO: Implement blockchain query via NeoBridgeTool
-        # 1. Connect to Neo N3 RPC node
-        # 2. Query NEP-11 contract for balance
-        # 3. Parse and return TokenPosition
-        
-        raise NotImplementedError("Token balance check not yet implemented")
-    
-    async def get_all_balances(self) -> dict[str, TokenPosition]:
-        """
-        Retrieve all token balances across different Compute Token types.
-        
-        Returns:
-            dict: Mapping of token_id to TokenPosition for all held tokens
-        """
-        # TODO: Implement multi-token balance query
-        raise NotImplementedError("All balances query not yet implemented")
-    
-    # =========================================================================
-    # MARKET QUALITY ANALYSIS (Q-SCORE)
-    # =========================================================================
-    
-    async def analyze_q_score(
-        self,
-        model_id: str,
-        performance_metrics: Optional[dict[str, float]] = None
-    ) -> float:
-        """
-        Analyze the Quality Score (Q-score) for an AI model's compute capacity.
-        
-        The Q-score is a composite metric that determines the fair market value
-        of Compute Tokens based on:
-        - Inference latency
-        - Throughput (tokens/second)
-        - Accuracy on benchmark tasks
-        - Availability/uptime
-        - Cost efficiency
-        
-        Args:
-            model_id: The unique identifier of the AI model being evaluated
-            performance_metrics: Optional dict of pre-collected metrics. If None,
-                               metrics will be fetched from on-chain oracles.
-        
-        Returns:
-            float: The calculated Q-score between 0.0 and 100.0
-        
-        Raises:
-            ValueError: If model_id is not registered on-chain
-            TimeoutError: If performance data cannot be retrieved in time
-        """
-        # TODO: Implement Q-score calculation
-        # 1. Fetch performance data from oracles or use provided metrics
-        # 2. Apply weighted scoring algorithm
-        # 3. Normalize to 0-100 scale
-        # 4. Update market_state with new Q-score
-        
-        raise NotImplementedError("Q-score analysis not yet implemented")
-    
-    async def get_market_q_scores(self) -> dict[str, float]:
-        """
-        Retrieve Q-scores for all active models in the marketplace.
-        
-        Returns:
-            dict: Mapping of model_id to their current Q-scores
-        """
-        # TODO: Implement market-wide Q-score aggregation
-        raise NotImplementedError("Market Q-scores query not yet implemented")
-    
-    async def compare_q_scores(
-        self,
-        model_ids: list[str]
-    ) -> list[tuple[str, float, str]]:
-        """
-        Compare Q-scores between multiple models and provide rankings.
-        
-        Args:
-            model_ids: List of model identifiers to compare
-            
-        Returns:
-            list: Sorted list of (model_id, q_score, recommendation) tuples
-        """
-        # TODO: Implement comparative Q-score analysis
-        raise NotImplementedError("Q-score comparison not yet implemented")
-    
-    # =========================================================================
-    # TRADING OPERATIONS
-    # =========================================================================
-    
-    async def execute_buy_order(
-        self,
-        token_id: str,
-        amount: float,
-        max_price: Optional[float] = None
-    ) -> dict[str, Any]:
-        """
-        Execute a buy order for Compute Tokens.
-        
-        Args:
-            token_id: The token to purchase
-            amount: Number of tokens to buy
-            max_price: Maximum price willing to pay (slippage protection)
-            
-        Returns:
-            dict: Transaction result including tx_hash and filled amount
-        """
-        # TODO: Implement buy order execution
-        raise NotImplementedError("Buy order execution not yet implemented")
-    
-    async def execute_sell_order(
-        self,
-        token_id: str,
-        amount: float,
-        min_price: Optional[float] = None
-    ) -> dict[str, Any]:
-        """
-        Execute a sell order for Compute Tokens.
-        
-        Args:
-            token_id: The token to sell
-            amount: Number of tokens to sell
-            min_price: Minimum price to accept (slippage protection)
-            
-        Returns:
-            dict: Transaction result including tx_hash and filled amount
-        """
-        # TODO: Implement sell order execution
-        raise NotImplementedError("Sell order execution not yet implemented")
-    
-    # =========================================================================
-    # AGENT LIFECYCLE
-    # =========================================================================
-    
-    async def on_start(self) -> None:
-        """Called when the agent starts. Initialize connections and state."""
-        # TODO: Initialize Neo N3 connection
-        # TODO: Load current market state
-        # TODO: Sync token positions
-        pass
-    
-    async def on_stop(self) -> None:
-        """Called when the agent stops. Clean up resources."""
-        # TODO: Close connections gracefully
-        # TODO: Persist any cached state
-        pass
+        self.contract_hash = contract_hash
+        self.rpc_url = rpc_url
+        self.price_tool = price_tool
+        self.buy_tool = buy_tool
 
 
-# Convenience function for quick agent instantiation
-def create_trader_agent(
-    wallet_address: str,
-    config: Optional[dict] = None
-) -> ChattenTraderAgent:
+async def run_trader_loop(contract_hash: Optional[str] = None) -> None:
     """
-    Factory function to create a configured ChattenTraderAgent.
+    Run the trader agent loop once to demonstrate a trade.
     
     Args:
-        wallet_address: Neo N3 wallet address for the agent
-        config: Optional configuration overrides
-        
-    Returns:
-        ChattenTraderAgent: Configured and ready-to-use agent instance
+        contract_hash: Optional contract hash (will prompt if None)
     """
-    default_config = {
-        "name": "ChattenTrader",
-        "neo_wallet_address": wallet_address,
-    }
+    print("=" * 70)
+    print("Chatten Trader Agent - Autonomous Trading Bot")
+    print("=" * 70)
+    print()
     
-    if config:
-        default_config.update(config)
+    # Get contract hash if not provided
+    if not contract_hash:
+        contract_hash = get_contract_hash()
     
-    return ChattenTraderAgent(**default_config)
+    # Check environment variables
+    rpc_url = os.getenv("NEO_RPC_URL", "http://localhost:50012")
+    private_key = os.getenv("NEO_PRIVATE_KEY")
+    
+    if not private_key:
+        print("⚠️  Warning: NEO_PRIVATE_KEY not set. Buy operations will fail.")
+        print("   Set it in your .env file or environment variables.")
+        print()
+    
+    print(f"📡 RPC URL: {rpc_url}")
+    print(f"📝 Contract Hash: {contract_hash}")
+    print()
+    
+    # Create agent
+    try:
+        agent = ChattenTraderAgent(
+            contract_hash=contract_hash,
+            rpc_url=rpc_url,
+            private_key=private_key
+        )
+        
+        print("🤖 Agent initialized successfully!")
+        print()
+        print("🔄 Running trading loop...")
+        print()
+        
+        # Run the agent with a prompt to check price and buy if attractive
+        prompt = "Check the price of 'gpt-4'. If it is below 1,000,000, BUY 2.0 GAS worth of credits immediately."
+        
+        print(f"💬 Agent Prompt: {prompt}")
+        print()
+        
+        # Execute the agent
+        response = await agent.run(prompt)
+        
+        print("=" * 70)
+        print("Agent Response:")
+        print("=" * 70)
+        print(response)
+        print()
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        print()
+        import traceback
+        traceback.print_exc()
+
+
+def main() -> None:
+    """Main entry point."""
+    asyncio.run(run_trader_loop())
+
+
+if __name__ == "__main__":
+    main()

@@ -5,7 +5,7 @@
         "methods": [
             {
                 "name": "_deploy",
-                "offset": 2910,
+                "offset": 3265,
                 "parameters": [
                     {
                         "type": "Any",
@@ -20,29 +20,43 @@
                 "returntype": "Void"
             },
             {
-                "name": "symbol",
+                "name": "claim_ownership",
                 "offset": 0,
+                "parameters": [],
+                "safe": false,
+                "returntype": "Boolean"
+            },
+            {
+                "name": "is_ownership_claimed",
+                "offset": 267,
+                "parameters": [],
+                "safe": true,
+                "returntype": "Boolean"
+            },
+            {
+                "name": "symbol",
+                "offset": 293,
                 "parameters": [],
                 "safe": true,
                 "returntype": "String"
             },
             {
                 "name": "decimals",
-                "offset": 10,
+                "offset": 303,
                 "parameters": [],
                 "safe": true,
                 "returntype": "Integer"
             },
             {
                 "name": "totalSupply",
-                "offset": 12,
+                "offset": 305,
                 "parameters": [],
                 "safe": true,
                 "returntype": "Integer"
             },
             {
                 "name": "balanceOf",
-                "offset": 36,
+                "offset": 329,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -54,7 +68,7 @@
             },
             {
                 "name": "tokenSupply",
-                "offset": 82,
+                "offset": 375,
                 "parameters": [
                     {
                         "type": "ByteArray",
@@ -66,7 +80,7 @@
             },
             {
                 "name": "tokensOf",
-                "offset": 113,
+                "offset": 406,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -79,7 +93,7 @@
             },
             {
                 "name": "get_current_price",
-                "offset": 150,
+                "offset": 443,
                 "parameters": [
                     {
                         "type": "ByteArray",
@@ -91,7 +105,7 @@
             },
             {
                 "name": "update_price_oracle",
-                "offset": 200,
+                "offset": 493,
                 "parameters": [
                     {
                         "type": "ByteArray",
@@ -107,14 +121,14 @@
             },
             {
                 "name": "get_gas_reserve",
-                "offset": 292,
+                "offset": 614,
                 "parameters": [],
                 "safe": true,
                 "returntype": "Integer"
             },
             {
                 "name": "transfer",
-                "offset": 316,
+                "offset": 638,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -142,7 +156,7 @@
             },
             {
                 "name": "mint",
-                "offset": 576,
+                "offset": 898,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -166,7 +180,7 @@
             },
             {
                 "name": "burn",
-                "offset": 922,
+                "offset": 1277,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -186,7 +200,7 @@
             },
             {
                 "name": "buy_compute",
-                "offset": 1212,
+                "offset": 1567,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -206,7 +220,7 @@
             },
             {
                 "name": "sell_compute",
-                "offset": 1618,
+                "offset": 1973,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -226,7 +240,7 @@
             },
             {
                 "name": "onNEP17Payment",
-                "offset": 2133,
+                "offset": 2488,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -246,7 +260,7 @@
             },
             {
                 "name": "onNEP11Payment",
-                "offset": 2271,
+                "offset": 2626,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -270,28 +284,28 @@
             },
             {
                 "name": "pause",
-                "offset": 2276,
+                "offset": 2631,
                 "parameters": [],
                 "safe": false,
                 "returntype": "Boolean"
             },
             {
                 "name": "resume",
-                "offset": 2314,
+                "offset": 2669,
                 "parameters": [],
                 "safe": false,
                 "returntype": "Boolean"
             },
             {
                 "name": "isPaused",
-                "offset": 2352,
+                "offset": 2707,
                 "parameters": [],
                 "safe": true,
                 "returntype": "Boolean"
             },
             {
                 "name": "set_oracle",
-                "offset": 2359,
+                "offset": 2714,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -307,7 +321,7 @@
             },
             {
                 "name": "set_minter",
-                "offset": 2426,
+                "offset": 2781,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -323,14 +337,14 @@
             },
             {
                 "name": "get_admin",
-                "offset": 2493,
+                "offset": 2848,
                 "parameters": [],
                 "safe": true,
                 "returntype": "Hash160"
             },
             {
                 "name": "is_oracle",
-                "offset": 2637,
+                "offset": 2992,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -342,7 +356,7 @@
             },
             {
                 "name": "is_minter",
-                "offset": 2647,
+                "offset": 3002,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -354,7 +368,7 @@
             },
             {
                 "name": "withdraw_gas",
-                "offset": 2657,
+                "offset": 3012,
                 "parameters": [
                     {
                         "type": "Hash160",
@@ -370,7 +384,7 @@
             },
             {
                 "name": "_initialize",
-                "offset": 3020,
+                "offset": 3353,
                 "parameters": [],
                 "safe": false,
                 "returntype": "Void"
