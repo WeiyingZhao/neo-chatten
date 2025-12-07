@@ -3,6 +3,7 @@ Token Tools
 
 SpoonOS tools for interacting with the Chatten NEP-11 token contract.
 """
+from __future__ import annotations
 
 from typing import Any, Optional
 from dataclasses import dataclass

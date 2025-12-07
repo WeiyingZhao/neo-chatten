@@ -3,6 +3,7 @@ Market Tools
 
 SpoonOS tools for analyzing market quality and AI model performance.
 """
+from __future__ import annotations
 
 from typing import Any, Optional
 from dataclasses import dataclass, field
@@ -234,40 +235,104 @@ class QScoreAnalyzerTool(BaseTool):
     def _calculate_latency_score(self, metrics: PerformanceMetrics) -> float:
         """
         Calculate latency component score (0-1).
-        
+
         Lower latency = higher score.
+        Thresholds:
+        - <50ms = 1.0 (excellent)
+        - <100ms = 0.8 (good)
+        - <200ms = 0.6 (acceptable)
+        - <500ms = 0.4 (fair)
+        - <1000ms = 0.2 (poor)
+        - >=1000ms = 0.0 (unacceptable)
         """
-        # TODO: Implement latency scoring
-        # Score based on average latency thresholds
-        # <50ms = 1.0, <100ms = 0.8, <200ms = 0.6, etc.
+        latency = metrics.avg_latency_ms
+        if latency <= 0:
+            return 0.0
+        if latency < 50:
+            return 1.0
+        if latency < 100:
+            return 0.8
+        if latency < 200:
+            return 0.6
+        if latency < 500:
+            return 0.4
+        if latency < 1000:
+            return 0.2
         return 0.0
     
     def _calculate_throughput_score(self, metrics: PerformanceMetrics) -> float:
         """
         Calculate throughput component score (0-1).
-        
+
         Higher throughput = higher score.
+        Based on tokens_per_second:
+        - >=1000 = 1.0 (excellent)
+        - >=500 = 0.8 (good)
+        - >=200 = 0.6 (acceptable)
+        - >=100 = 0.4 (fair)
+        - >=50 = 0.2 (poor)
+        - <50 = 0.0 (unacceptable)
         """
-        # TODO: Implement throughput scoring
+        tps = metrics.tokens_per_second
+        if tps >= 1000:
+            return 1.0
+        if tps >= 500:
+            return 0.8
+        if tps >= 200:
+            return 0.6
+        if tps >= 100:
+            return 0.4
+        if tps >= 50:
+            return 0.2
         return 0.0
     
     def _calculate_quality_score(self, metrics: PerformanceMetrics) -> float:
         """
         Calculate quality component score (0-1).
-        
-        Based on accuracy and benchmark performance.
+
+        Based on accuracy_score (0-1 scale) and benchmark_score.
+        Weighted: 60% accuracy + 40% benchmark (normalized to 0-1).
         """
-        # TODO: Implement quality scoring
-        return 0.0
+        accuracy = min(max(metrics.accuracy_score, 0.0), 1.0)
+        benchmark = min(max(metrics.benchmark_score / 100.0, 0.0), 1.0)
+
+        return accuracy * 0.6 + benchmark * 0.4
     
     def _calculate_reliability_score(self, metrics: PerformanceMetrics) -> float:
         """
         Calculate reliability component score (0-1).
-        
-        Based on uptime and error rates.
+
+        Based on uptime and error rates:
+        - 50% weight on uptime (normalized: 99%+ = ~1.0, 90% = 0.2)
+        - 50% weight on error rate (inverted: 0% = 1.0, 10%+ = 0.0)
         """
-        # TODO: Implement reliability scoring
-        return 0.0
+        # Uptime score: 90% = 0.2, 95% = 0.5, 99% = 0.9, 99.9% = 1.0
+        uptime = metrics.uptime_percentage
+        if uptime >= 99.9:
+            uptime_score = 1.0
+        elif uptime >= 99:
+            uptime_score = 0.9
+        elif uptime >= 95:
+            uptime_score = 0.5
+        elif uptime >= 90:
+            uptime_score = 0.2
+        else:
+            uptime_score = 0.0
+
+        # Error rate score: 0% = 1.0, 1% = 0.9, 5% = 0.5, 10%+ = 0.0
+        error_rate = metrics.error_rate
+        if error_rate <= 0:
+            error_score = 1.0
+        elif error_rate <= 0.01:
+            error_score = 0.9
+        elif error_rate <= 0.05:
+            error_score = 0.5
+        elif error_rate < 0.10:
+            error_score = 0.2
+        else:
+            error_score = 0.0
+
+        return uptime_score * 0.5 + error_score * 0.5
     
     def _generate_recommendations(
         self,

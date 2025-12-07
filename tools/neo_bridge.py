@@ -5,7 +5,8 @@ Core SpoonOS tool for connecting agents to the Neo N3 blockchain.
 Handles RPC communication, transaction signing, and contract invocation.
 """
 
-from typing import Any, Optional
+from __future__ import annotations
+from typing import Any, Optional, List
 from dataclasses import dataclass
 
 # SpoonOS SDK imports
