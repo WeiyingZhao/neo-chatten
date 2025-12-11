@@ -4,6 +4,8 @@
 
 Chatten is a next-generation decentralized marketplace that bridges AI compute resources with blockchain tokenomics. It enables AI agents to autonomously buy, sell, and trade compute capacity based on real-time performance metrics, powered by the Neo N3 blockchain and SpoonOS agent framework.
 
+![Rolling Models](rolling_models.png)
+
 ---
 
 ## Vision
